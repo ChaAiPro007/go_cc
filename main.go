@@ -74,8 +74,19 @@ func main() {
     r.POST("/login", handleLogin)
     r.GET("/logout", handleLogout)
 
-    // Protected routes
-    authorized := r.Group("/")
+    // Root redirect
+    r.GET("/", func(c *gin.Context) {
+        session := sessions.Default(c)
+        if session.Get("authenticated") == true {
+            // Redirect to terminal interface
+            c.Redirect(http.StatusFound, "/terminal/")
+        } else {
+            c.Redirect(http.StatusFound, "/login")
+        }
+    })
+
+    // Protected routes - use /terminal prefix to avoid conflicts
+    authorized := r.Group("/terminal")
     authorized.Use(authRequired())
     {
         // Proxy all requests to ttyd
@@ -112,7 +123,7 @@ func handleLogin(c *gin.Context) {
             c.Redirect(http.StatusFound, "/login?error=1")
             return
         }
-        c.Redirect(http.StatusFound, "/")
+        c.Redirect(http.StatusFound, "/terminal/")
         return
     }
 
@@ -147,18 +158,29 @@ func proxyToTtyd() gin.HandlerFunc {
     
     proxy := httputil.NewSingleHostReverseProxy(target)
     
-    // Custom director to handle WebSocket upgrades
+    // Custom director to handle WebSocket upgrades and path rewriting
     originalDirector := proxy.Director
     proxy.Director = func(req *http.Request) {
         originalDirector(req)
+        
+        // Remove /terminal prefix from path
+        req.URL.Path = strings.TrimPrefix(req.URL.Path, "/terminal")
+        if req.URL.Path == "" {
+            req.URL.Path = "/"
+        }
+        
         // Ensure proper headers for WebSocket
         if strings.ToLower(req.Header.Get("Connection")) == "upgrade" &&
            strings.ToLower(req.Header.Get("Upgrade")) == "websocket" {
             req.Header.Set("Host", target.Host)
         }
+        
+        // Log for debugging
+        log.Printf("Proxying request: %s %s -> %s", req.Method, req.URL.Path, target.Host)
     }
 
     return func(c *gin.Context) {
+        // Handle the request
         proxy.ServeHTTP(c.Writer, c.Request)
     }
 }

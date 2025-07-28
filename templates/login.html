@@ -52,8 +52,10 @@
             <input type="text" name="username" placeholder="Username" required>
             <input type="password" name="password" placeholder="Password" required>
             <button type="submit">Login</button>
-            {{if .error}}
+            {{if eq .error "1"}}
             <div class="error">Invalid credentials</div>
+            {{else if eq .error "2"}}
+            <div class="error">Too many login attempts. Please try again later.</div>
             {{end}}
         </form>
     </div>

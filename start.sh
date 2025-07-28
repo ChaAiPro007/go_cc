@@ -86,43 +86,98 @@ fi
 TTYD_PORT=$(echo $TTYD_URL | grep -oE '[0-9]+$')
 TTYD_PORT=${TTYD_PORT:-7681}
 
-# Check if ttyd is already running on the port
-if lsof -Pi :$TTYD_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+# Skip port check and find available port
+print_status "查找可用端口..."
+ORIGINAL_PORT=$TTYD_PORT
+
+# Find available port starting from TTYD_PORT
+for port in $(seq $TTYD_PORT 7690); do
+    if ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+        TTYD_PORT=$port
+        print_status "找到可用端口: $TTYD_PORT"
+        break
+    else
+        print_warning "端口 $port 已被占用"
+    fi
+done
+
+# If no port found, use a higher range
+if [ "$TTYD_PORT" -eq 7690 ] && lsof -Pi :$TTYD_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+    TTYD_PORT=$((ORIGINAL_PORT + 100))
+    print_warning "使用备用端口: $TTYD_PORT"
+fi
+
+# Old port check logic (skip it)
+if false; then
+    TTYD_PIDS=$(lsof -Pi :$TTYD_PORT -sTCP:LISTEN -t 2>/dev/null)
+    TTYD_INFO=$(ps -p $TTYD_PIDS -o user=,comm= 2>/dev/null | head -1)
     print_warning "端口 $TTYD_PORT 已被占用"
     echo ""
-    echo "检测到 ttyd 或其他服务正在使用端口 $TTYD_PORT"
-    echo "选项："
-    echo "1) 停止现有服务并继续"
-    echo "2) 使用其他端口"
-    echo "3) 退出"
-    read -p "请选择 (1-3): " port_choice
+    echo "进程信息: $TTYD_INFO (PID: $TTYD_PIDS)"
     
-    case $port_choice in
-        1)
-            TTYD_PIDS=$(lsof -Pi :$TTYD_PORT -sTCP:LISTEN -t 2>/dev/null)
-            if [ ! -z "$TTYD_PIDS" ]; then
+    # Check if it's a root process
+    if [[ "$TTYD_INFO" == *"root"* ]]; then
+        print_warning "这是一个系统进程，建议使用其他端口"
+        echo ""
+        echo "选项："
+        echo "1) 使用备用端口 (推荐)"
+        echo "2) 尝试停止进程 (需要 sudo)"
+        echo "3) 退出"
+        read -p "请选择 (1-3): " port_choice
+        
+        case $port_choice in
+            1)
+                # Find an available port
+                for port in $(seq 7682 7690); do
+                    if ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+                        TTYD_PORT=$port
+                        print_status "使用端口 $TTYD_PORT"
+                        break
+                    fi
+                done
+                ;;
+            2)
+                print_warning "需要 sudo 权限"
+                exit 1
+                ;;
+            3)
+                exit 0
+                ;;
+        esac
+    else
+        echo "选项："
+        echo "1) 停止现有服务并继续"
+        echo "2) 使用其他端口"
+        echo "3) 退出"
+        read -p "请选择 (1-3): " port_choice
+        
+        case $port_choice in
+            1)
                 for pid in $TTYD_PIDS; do
                     if kill -0 $pid 2>/dev/null; then
-                        kill $pid 2>/dev/null && print_status "已停止进程 $pid" || print_error "无法停止进程 $pid (可能需要 sudo 权限)"
+                        kill $pid 2>/dev/null && print_status "已停止进程 $pid" || print_error "无法停止进程 $pid"
                     fi
                 done
                 sleep 1
-            fi
-            ;;
-        2)
-            read -p "请输入新端口号: " new_port
-            TTYD_PORT=${new_port:-7682}
-            print_status "使用端口 $TTYD_PORT"
-            ;;
-        3)
-            print_status "退出"
-            exit 0
-            ;;
-        *)
-            print_error "无效选择，退出"
-            exit 1
-            ;;
-    esac
+                ;;
+            2)
+                for port in $(seq 7682 7690); do
+                    if ! lsof -Pi :$port -sTCP:LISTEN -t >/dev/null 2>&1; then
+                        TTYD_PORT=$port
+                        print_status "使用端口 $TTYD_PORT"
+                        break
+                    fi
+                done
+                ;;
+            3)
+                exit 0
+                ;;
+            *)
+                print_error "无效选择，退出"
+                exit 1
+                ;;
+        esac
+    fi
 fi
 
 # Check if web server port is in use
@@ -255,19 +310,42 @@ select_terminal_command() {
 # Select terminal command
 select_terminal_command
 
+# Update TTYD_URL if port was changed
+if [ "$TTYD_PORT" != "$(echo $TTYD_URL | grep -oE '[0-9]+$')" ]; then
+    export TTYD_URL="http://localhost:$TTYD_PORT"
+    print_status "更新 TTYD_URL 为: $TTYD_URL"
+fi
+
 # Start ttyd in background
-print_status "Starting ttyd on port $TTYD_PORT..."
-print_status "Command: ttyd -p $TTYD_PORT $TTYD_COMMAND"
-ttyd -p $TTYD_PORT $TTYD_COMMAND &
+print_status "正在端口 $TTYD_PORT 启动 ttyd..."
+print_status "执行命令: ttyd -i 127.0.0.1 -p $TTYD_PORT $TTYD_COMMAND"
+
+# Start ttyd and capture output - ONLY listen on localhost
+ttyd -i 127.0.0.1 -p $TTYD_PORT $TTYD_COMMAND > /tmp/ttyd.log 2>&1 &
 TTYD_PID=$!
 sleep 2
 
 # Check if ttyd started successfully
 if ! kill -0 $TTYD_PID 2>/dev/null; then
-    print_error "Failed to start ttyd"
-    exit 1
+    print_error "ttyd 启动失败"
+    if [ -f /tmp/ttyd.log ]; then
+        echo "错误信息:"
+        tail -n 10 /tmp/ttyd.log
+    fi
+    # Try alternative port
+    print_warning "尝试使用备用端口..."
+    TTYD_PORT=$((TTYD_PORT + 1))
+    export TTYD_URL="http://localhost:$TTYD_PORT"
+    print_status "使用端口 $TTYD_PORT 重试..."
+    ttyd -i 127.0.0.1 -p $TTYD_PORT $TTYD_COMMAND > /tmp/ttyd.log 2>&1 &
+    TTYD_PID=$!
+    sleep 2
+    if ! kill -0 $TTYD_PID 2>/dev/null; then
+        print_error "ttyd 启动失败，请检查端口是否被占用"
+        exit 1
+    fi
 else
-    print_status "ttyd started successfully (PID: $TTYD_PID)"
+    print_status "ttyd 启动成功 (PID: $TTYD_PID)"
 fi
 
 # Function to cleanup on exit
