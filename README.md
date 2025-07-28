@@ -44,10 +44,13 @@ vim .env
 ### 3. 启动服务
 
 ```bash
-# 使用启动脚本（推荐）
+# (可选) 创建示例 tmux 会话
+./create-tmux-sessions.sh
+
+# 使用启动脚本（推荐）- 会交互式让你选择终端模式
 ./start.sh
 
-# 或手动运行
+# 或手动运行（不选择 tmux）
 ./run.sh
 ```
 
@@ -61,6 +64,7 @@ vim .env
 | AUTH_PASSWORD | admin123 | 登录密码 |
 | SERVER_PORT | 3000 | Web 服务端口 |
 | TTYD_URL | http://localhost:7681 | ttyd 服务地址 |
+| TTYD_COMMAND | bash | ttyd 启动命令（支持 tmux） |
 | SESSION_SECRET | your-super-secret-key | Session 加密密钥 |
 | SESSION_NAME | terminal_session | Session 名称 |
 | SECURE_COOKIE | false | 是否启用安全 Cookie (HTTPS) |
@@ -69,25 +73,91 @@ vim .env
 
 ## 使用说明
 
+### 基本使用
+
 1. 访问 http://localhost:3000
 2. 使用配置的用户名密码登录
 3. 登录成功后将自动跳转到 Web 终端
+
+### 使用 tmux 会话
+
+启动脚本会自动检测并列出所有 tmux 会话，让你选择要映射的终端：
+
+```bash
+./start.sh
+
+# 输出示例：
+===================================
+Select Terminal Mode:
+===================================
+Available tmux sessions:
+
+1) myapp: 2 windows (created Mon Nov 18 10:30:00 2024)
+2) webterm: 1 windows (created Mon Nov 18 09:15:00 2024)
+3) Start regular bash shell
+4) Create new tmux session
+
+Enter your choice (1-4): 
+```
+
+选择 tmux 会话后，如果该会话有多个窗口，还可以选择特定窗口：
+```
+Windows in session 'myapp':
+0: bash
+1: logs
+Enter window number (or press Enter for current): 
+```
+
+#### 手动指定命令
+
+也可以通过环境变量跳过交互式选择：
+
+```bash
+# 直接连接到指定会话
+export TTYD_COMMAND="tmux attach-session -t myapp"
+./start.sh
+
+# 连接到特定窗口
+export TTYD_COMMAND="tmux attach-session -t webterm:logs"
+./start.sh
+```
+
+#### 预创建 tmux 会话
+
+提前创建有意义的 tmux 会话：
+```bash
+# 创建开发环境会话
+tmux new-session -d -s dev
+tmux send-keys -t dev "cd /project && npm run dev" C-m
+tmux new-window -t dev -n logs
+tmux send-keys -t dev:logs "tail -f /var/log/app.log" C-m
+tmux new-window -t dev -n db
+tmux send-keys -t dev:db "mysql -u root -p" C-m
+
+# 创建监控会话
+tmux new-session -d -s monitor
+tmux send-keys -t monitor "htop" C-m
+tmux split-window -t monitor -h
+tmux send-keys -t monitor "watch df -h" C-m
+```
 
 ## 项目结构
 
 ```
 gin-terminal/
-├── main.go              # 主程序
+├── main.go                    # 主程序
 ├── templates/
-│   └── login.html       # 登录页面模板
-├── .env                 # 环境配置文件（不提交到版本控制）
-├── .env.example         # 环境配置示例
-├── .gitignore          # Git 忽略文件
-├── start.sh            # 生产环境启动脚本
-├── run.sh              # 快速启动脚本
-├── go.mod              # Go 模块配置
-├── go.sum              # 依赖版本锁定
-└── README.md           # 项目说明
+│   └── login.html            # 登录页面模板
+├── .env                      # 环境配置文件（不提交到版本控制）
+├── .env.example              # 环境配置示例
+├── .gitignore               # Git 忽略文件
+├── start.sh                 # 生产环境启动脚本（支持交互式选择）
+├── run.sh                   # 快速启动脚本
+├── create-tmux-sessions.sh  # 创建示例 tmux 会话
+├── go.mod                   # Go 模块配置
+├── go.sum                   # 依赖版本锁定
+├── README.md                # 项目说明
+└── TTYD_GUIDE.md           # ttyd 详细使用指南
 ```
 
 ## 安全建议

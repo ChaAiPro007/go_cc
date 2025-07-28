@@ -273,6 +273,120 @@ ttyd -p 8080 docker run -it ubuntu:latest bash
 ttyd -p 8080 ssh user@remote-server
 ```
 
+### tmux 会话映射
+
+ttyd 可以映射现有的 tmux 会话，让你通过 Web 访问特定的 tmux 窗口：
+
+#### 1. 创建 tmux 会话
+```bash
+# 创建新会话
+tmux new-session -d -s webterm
+
+# 在会话中运行命令
+tmux send-keys -t webterm "htop" C-m
+
+# 创建多个窗口
+tmux new-window -t webterm -n logs
+tmux send-keys -t webterm:logs "tail -f /var/log/syslog" C-m
+
+tmux new-window -t webterm -n docker
+tmux send-keys -t webterm:docker "docker ps -a" C-m
+```
+
+#### 2. 使用 ttyd 连接 tmux 会话
+```bash
+# 连接到默认会话
+ttyd -p 8080 tmux attach
+
+# 连接到特定会话
+ttyd -p 8080 tmux attach-session -t webterm
+
+# 连接到特定窗口
+ttyd -p 8080 tmux attach-session -t webterm:logs
+
+# 只读模式查看
+ttyd -p 8080 -r tmux attach-session -t webterm
+
+# 创建新会话（如果不存在）
+ttyd -p 8080 tmux new-session -A -s webterm
+```
+
+#### 3. 高级 tmux 映射
+```bash
+# 映射特定面板
+ttyd -p 8080 tmux attach-session -t webterm:0.1
+
+# 使用脚本自动创建和连接
+cat > /usr/local/bin/ttyd-tmux.sh << 'EOF'
+#!/bin/bash
+SESSION_NAME="${1:-webterm}"
+WINDOW_NAME="${2:-main}"
+
+# 检查会话是否存在
+tmux has-session -t $SESSION_NAME 2>/dev/null
+if [ $? != 0 ]; then
+    # 创建新会话
+    tmux new-session -d -s $SESSION_NAME -n $WINDOW_NAME
+fi
+
+# 连接到会话
+tmux attach-session -t $SESSION_NAME:$WINDOW_NAME
+EOF
+
+chmod +x /usr/local/bin/ttyd-tmux.sh
+ttyd -p 8080 /usr/local/bin/ttyd-tmux.sh myapp logs
+```
+
+#### 4. 持久化 tmux 会话服务
+```bash
+# 创建 systemd 服务维持 tmux 会话
+cat > /etc/systemd/system/tmux-webterm.service << 'EOF'
+[Unit]
+Description=Tmux session for ttyd
+After=network.target
+
+[Service]
+Type=forking
+User=ttyd
+ExecStart=/usr/bin/tmux new-session -d -s webterm
+ExecStop=/usr/bin/tmux kill-session -t webterm
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 启动 tmux 会话服务
+sudo systemctl enable tmux-webterm
+sudo systemctl start tmux-webterm
+
+# 然后用 ttyd 连接
+ttyd -p 8080 tmux attach-session -t webterm
+```
+
+#### 5. 多用户 tmux 映射
+```bash
+# 为每个用户创建独立的 tmux 会话
+ttyd -p 8081 -c user1:pass1 sh -c 'tmux new-session -A -s user1'
+ttyd -p 8082 -c user2:pass2 sh -c 'tmux new-session -A -s user2'
+
+# 或使用单个端口，根据认证用户选择会话
+cat > /usr/local/bin/user-tmux.sh << 'EOF'
+#!/bin/bash
+USER=$(whoami)
+tmux new-session -A -s $USER
+EOF
+
+chmod +x /usr/local/bin/user-tmux.sh
+ttyd -p 8080 -c user1:pass1 /usr/local/bin/user-tmux.sh
+```
+
+#### 注意事项
+1. tmux 会话必须在 ttyd 启动前创建
+2. 使用 `-d` 参数让 tmux 在后台运行
+3. 确保 ttyd 运行用户有权限访问 tmux 会话
+4. 断开连接不会结束 tmux 会话，可以重新连接
+
 ## 高级配置
 
 ### 1. 系统服务配置
