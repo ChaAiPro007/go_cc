@@ -86,18 +86,57 @@ fi
 TTYD_PORT=$(echo $TTYD_URL | grep -oE '[0-9]+$')
 TTYD_PORT=${TTYD_PORT:-7681}
 
-# Kill existing ttyd process
-if pgrep -f "ttyd.*-p $TTYD_PORT" > /dev/null; then
-    print_warning "Stopping existing ttyd process on port $TTYD_PORT"
-    pkill -f "ttyd.*-p $TTYD_PORT"
-    sleep 1
+# Check if ttyd is already running on the port
+if lsof -Pi :$TTYD_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
+    print_warning "端口 $TTYD_PORT 已被占用"
+    echo ""
+    echo "检测到 ttyd 或其他服务正在使用端口 $TTYD_PORT"
+    echo "选项："
+    echo "1) 停止现有服务并继续"
+    echo "2) 使用其他端口"
+    echo "3) 退出"
+    read -p "请选择 (1-3): " port_choice
+    
+    case $port_choice in
+        1)
+            TTYD_PIDS=$(lsof -Pi :$TTYD_PORT -sTCP:LISTEN -t 2>/dev/null)
+            if [ ! -z "$TTYD_PIDS" ]; then
+                for pid in $TTYD_PIDS; do
+                    if kill -0 $pid 2>/dev/null; then
+                        kill $pid 2>/dev/null && print_status "已停止进程 $pid" || print_error "无法停止进程 $pid (可能需要 sudo 权限)"
+                    fi
+                done
+                sleep 1
+            fi
+            ;;
+        2)
+            read -p "请输入新端口号: " new_port
+            TTYD_PORT=${new_port:-7682}
+            print_status "使用端口 $TTYD_PORT"
+            ;;
+        3)
+            print_status "退出"
+            exit 0
+            ;;
+        *)
+            print_error "无效选择，退出"
+            exit 1
+            ;;
+    esac
 fi
 
-# Kill existing web terminal process
+# Check if web server port is in use
 if lsof -Pi :${SERVER_PORT:-3000} -sTCP:LISTEN -t >/dev/null 2>&1; then
-    print_warning "Port ${SERVER_PORT:-3000} is already in use, stopping existing process"
-    kill $(lsof -Pi :${SERVER_PORT:-3000} -sTCP:LISTEN -t) 2>/dev/null
-    sleep 1
+    print_warning "Web 服务端口 ${SERVER_PORT:-3000} 已被占用"
+    WEB_PID=$(lsof -Pi :${SERVER_PORT:-3000} -sTCP:LISTEN -t 2>/dev/null)
+    # Only try to kill if it's our own web-terminal process
+    if ps -p $WEB_PID -o comm= | grep -q "web-terminal\|main"; then
+        kill $WEB_PID 2>/dev/null && print_status "已停止之前的 Web 服务进程" || print_error "无法停止进程 (可能需要 sudo 权限)"
+        sleep 1
+    else
+        print_error "端口被其他程序占用，请检查或修改 SERVER_PORT 配置"
+        exit 1
+    fi
 fi
 
 # Interactive tmux session selection
@@ -120,88 +159,92 @@ select_terminal_command() {
     
     echo ""
     echo "==================================="
-    echo "Select Terminal Mode:"
+    echo "选择终端模式:"
     echo "==================================="
     
     if [ -z "$sessions" ]; then
-        echo "1) Start regular bash shell"
-        echo "2) Create new tmux session"
+        echo "1) 启动普通 bash shell"
+        echo "2) 创建新的 tmux 会话"
         echo ""
-        read -p "Enter your choice (1-2): " choice
+        read -p "请输入选择 (1-2): " choice
         
         case $choice in
             1)
                 TTYD_COMMAND="bash"
-                print_status "Selected: Regular bash shell"
+                print_status "已选择: 普通 bash shell"
                 ;;
             2)
-                read -p "Enter tmux session name: " session_name
+                read -p "输入 tmux 会话名称: " session_name
                 session_name=${session_name:-webterm}
                 tmux new-session -d -s "$session_name"
                 TTYD_COMMAND="tmux attach-session -t $session_name"
-                print_status "Created and selected tmux session: $session_name"
+                print_status "已创建并选择 tmux 会话: $session_name"
                 ;;
             *)
-                print_warning "Invalid choice, using bash"
+                print_warning "无效的选择，使用 bash"
                 TTYD_COMMAND="bash"
                 ;;
         esac
     else
         # List existing sessions
-        echo "Available tmux sessions:"
+        echo "可用的 tmux 会话:"
         echo ""
         local i=1
         declare -a session_array
         while IFS= read -r session; do
-            # Get session info
-            local info=$(tmux list-sessions | grep "^$session:")
-            echo "$i) $info"
+            # Get detailed session info
+            local windows=$(tmux list-windows -t "$session" 2>/dev/null | wc -l)
+            local attached=""
+            if tmux list-sessions | grep "^$session:.*attached" > /dev/null 2>&1; then
+                attached=" (已连接)"
+            fi
+            echo "$i) 会话: $session - $windows 个窗口$attached"
             session_array[$i]=$session
             ((i++))
         done <<< "$sessions"
         
-        echo "$i) Start regular bash shell"
+        echo "$i) 启动普通 bash shell"
         local bash_option=$i
         ((i++))
-        echo "$i) Create new tmux session"
+        echo "$i) 创建新的 tmux 会话"
         local new_option=$i
         
         echo ""
-        read -p "Enter your choice (1-$i): " choice
+        read -p "请输入选择 (1-$i): " choice
         
         if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "$i" ]; then
             if [ "$choice" -eq "$bash_option" ]; then
                 TTYD_COMMAND="bash"
-                print_status "Selected: Regular bash shell"
+                print_status "已选择: 普通 bash shell"
             elif [ "$choice" -eq "$new_option" ]; then
-                read -p "Enter new tmux session name: " session_name
+                read -p "输入新的 tmux 会话名称: " session_name
                 session_name=${session_name:-webterm}
                 tmux new-session -d -s "$session_name"
                 TTYD_COMMAND="tmux attach-session -t $session_name"
-                print_status "Created and selected tmux session: $session_name"
+                print_status "已创建并选择 tmux 会话: $session_name"
             else
                 selected_session=${session_array[$choice]}
                 # Ask if user wants to select a specific window
                 local windows=$(tmux list-windows -t "$selected_session" 2>/dev/null | awk -F: '{print $1": "$2}')
                 if [ $(echo "$windows" | wc -l) -gt 1 ]; then
                     echo ""
-                    echo "Windows in session '$selected_session':"
+                    echo "'$selected_session' 会话中的窗口:"
                     echo "$windows"
-                    read -p "Enter window number (or press Enter for current): " window_num
+                    read -p "输入窗口编号 (或按 Enter 使用当前窗口): " window_num
                     if [ ! -z "$window_num" ]; then
                         TTYD_COMMAND="tmux attach-session -t $selected_session:$window_num"
-                        print_status "Selected: tmux session '$selected_session' window $window_num"
+                        print_status "已选择: tmux 会话 '$selected_session' 窗口 $window_num"
                     else
                         TTYD_COMMAND="tmux attach-session -t $selected_session"
-                        print_status "Selected: tmux session '$selected_session'"
+                        print_status "已选择: tmux 会话 '$selected_session'"
                     fi
                 else
                     TTYD_COMMAND="tmux attach-session -t $selected_session"
-                    print_status "Selected: tmux session '$selected_session'"
+                    print_status "已选择: tmux 会话 '$selected_session'"
                 fi
             fi
         else
-            print_warning "Invalid choice, using bash"
+            print_warning "无效的选择，使用 bash"
             TTYD_COMMAND="bash"
         fi
     fi
